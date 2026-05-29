@@ -122,7 +122,14 @@ type App interface {
 	// Tree mutations. Path is a "/"-separated string as accepted by
 	// tree.ParsePath.
 	ApplyNewFolder(t Tree, path string) MutateResult
-	ApplyNewCred(t Tree, path string, cred Cred) MutateResult
+	// ApplyNewCred creates an empty credential leaf at path. The
+	// frontend populates fields (password, URL, notes, TOTP) by
+	// mutating the returned tree in memory and calls SaveVault when
+	// the user commits. Backends that write through instead of
+	// batching should still accept this no-content create — they can
+	// persist an empty stub or defer the API call until the first
+	// non-empty field surfaces in SaveVault.
+	ApplyNewCred(t Tree, path string) MutateResult
 	ApplyDelete(t Tree, path string) MutateResult
 	ApplyRename(t Tree, path, newName string) MutateResult
 	ApplyMv(t Tree, src, dst string) MutateResult
