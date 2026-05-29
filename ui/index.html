@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Passbox</title>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Passbox</h1>
+        <button id="refresh" type="button">Refresh</button>
+      </header>
+      <div id="banner" class="banner" hidden role="status" aria-live="polite"></div>
+      <section id="landing">
+        <div id="status-card" class="card" aria-live="polite">
+          <p class="muted">Loading…</p>
+        </div>
+        <div id="landing-actions" class="actions" hidden>
+          <button id="enable-mgmt" type="button">Enable Management</button>
+        </div>
+      </section>
+      <section id="app-pane" hidden>
+        <div class="app-toolbar">
+          <span id="dirty-indicator" class="dirty" hidden aria-live="polite">Unsaved changes</span>
+          <button id="save-vault" type="button" disabled>Write to device</button>
+          <button id="reload-tree" type="button">Reload</button>
+          <button id="disable-mgmt" type="button">Exit management</button>
+        </div>
+        <div class="app-layout">
+          <nav id="page-nav" class="page-nav" aria-label="Sections">
+            <button id="nav-vault" type="button" class="nav-btn active" data-page="vault">Vault</button>
+            <button id="nav-settings" type="button" class="nav-btn" data-page="settings">Settings</button>
+          </nav>
+          <div id="page-vault" class="page vault-layout">
+            <div id="tree-pane" class="card tree" aria-label="Vault tree">
+              <p class="muted">Loading vault…</p>
+            </div>
+            <div id="detail-pane" class="card detail" aria-live="polite">
+              <p class="muted">Select an entry to inspect.</p>
+            </div>
+          </div>
+          <div id="page-settings" class="page settings-layout" hidden>
+            <div id="settings-pane" class="card settings" aria-live="polite">
+              <p class="muted">Loading settings…</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+    <div id="overlay" class="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="overlay-title">
+      <div class="modal card">
+        <h2 id="overlay-title">Confirm PIN on device</h2>
+        <p class="muted">Enter your PIN using the encoder, then press the button to confirm.</p>
+        <p id="overlay-error" class="error" hidden></p>
+      </div>
+    </div>
+    <div id="toast" class="toast" hidden role="status" aria-live="polite"></div>
+    <div id="picker-overlay" class="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="picker-title">
+      <div class="modal card">
+        <h2 id="picker-title">Choose a Passbox</h2>
+        <p class="muted">More than one device is connected. Pick which one this window should manage; the choice lasts until the window closes.</p>
+        <ul id="picker-list" class="picker-list"></ul>
+      </div>
+    </div>
+    <div id="discard-overlay" class="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="discard-title">
+      <div class="modal card">
+        <h2 id="discard-title">Unsaved changes</h2>
+        <p id="discard-body" class="muted">You have edits that haven't been written to the device.</p>
+        <div class="actions">
+          <button id="discard-write" type="button">Write to device</button>
+          <button id="discard-drop" type="button">Discard changes</button>
+          <button id="discard-cancel" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
+    <script src="app.js"></script>
+  </body>
+</html>
