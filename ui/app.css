@@ -407,6 +407,15 @@ dl.status dd { margin: 0; font-variant-numeric: tabular-nums; word-break: break-
   min-height: 0;
 }
 
+/* IDs win over the UA stylesheet's [hidden]{display:none}, so the
+   `hidden` attribute needs an explicit override at matching
+   specificity for the flex panes. */
+#app-pane[hidden],
+#login-screen[hidden],
+#landing[hidden] {
+  display: none;
+}
+
 .app-layout {
   flex: 1 1 auto;
   display: grid;

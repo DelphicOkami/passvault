@@ -910,17 +910,6 @@ function renderCredForm(parts, node) {
   // it would duplicate the same ApplyRename binding.
 
   form.appendChild(textField({
-    label: "Username",
-    value: node.username == null ? "" : node.username,
-    placeholder: "(not set)",
-    onInput: (v) => {
-      node.username = v === "" ? null : v;
-      markDirty();
-    },
-    validate: (v) => v === "" ? "" : callValidator("ValidateUsername", v),
-  }));
-
-  form.appendChild(textField({
     label: "URL",
     value: node.url == null ? "" : node.url,
     placeholder: "(not set)",
@@ -931,6 +920,17 @@ function renderCredForm(parts, node) {
     // No dedicated ValidateURL binding yet — the firmware applies the
     // same printable-ASCII rule to URL as to username, so reuse the
     // username validator's vocabulary.
+    validate: (v) => v === "" ? "" : callValidator("ValidateUsername", v),
+  }));
+
+  form.appendChild(textField({
+    label: "Username",
+    value: node.username == null ? "" : node.username,
+    placeholder: "(not set)",
+    onInput: (v) => {
+      node.username = v === "" ? null : v;
+      markDirty();
+    },
     validate: (v) => v === "" ? "" : callValidator("ValidateUsername", v),
   }));
 
