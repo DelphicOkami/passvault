@@ -12,21 +12,21 @@ Pre-1.0. API shape, capability flags, and nav structure are still
 moving. Tags are `v0.x.y`; no compatibility guarantees between minor
 versions until `v1.0.0`.
 
-Current contents: `ui/` only. The shared domain packages
-(`tree`, `audit`, `passgen`, `breach`, `search`) and the bound `App`
-interface land in subsequent commits.
+Current contents: `ui/` plus the shared domain packages (`tree`,
+`audit`, `passgen`, `breach`, `search`) and the bound `App` interface
+at the module root.
 
 ## Packages
 
 | Package | Status | What it owns |
 |---|---|---|
 | `ui` | ✅ shipped | Wails frontend assets (`index.html`, `app.css`, `app.js`) exposed as an `embed.FS`. |
-| `tree` | planned | Canonical vault schema: `Tree`/`Node`/`Cred` types, `Parse`/`Serialize`, `ParsePath`/`Resolve`, `Mkdir`/`Rm`/`Mv`/`Cp`/`Set`, `Validate`. |
-| `audit` | planned | Structural analysis: duplicates, reused passwords, weak, stale. |
-| `passgen` | planned | Password generator (character classes + diceware wordlist). |
-| `breach` | planned | HIBP k-anonymity client. |
-| `search` | planned | Tree filter for the search-as-you-type UI. |
-| _root_ | planned | `App` interface and `Capabilities` struct that both consumers implement. |
+| `tree` | ✅ shipped | Canonical vault schema: `Tree`/`Node`/`Cred` types, `Parse`/`Serialize`, `ParsePath`/`Resolve`, `Mkdir`/`Rm`/`Mv`/`Cp`/`Set`, `Validate`. |
+| `audit` | ✅ shipped | Structural analysis: duplicates, reused passwords, weak, stale. |
+| `passgen` | ✅ shipped | Password generator (character classes + diceware wordlist). |
+| `breach` | ✅ shipped | HIBP k-anonymity client. |
+| `search` | ✅ shipped | Tree filter for the search-as-you-type UI. |
+| _root_ | ✅ shipped | `App` interface and `Capabilities` struct that both consumers implement. |
 
 ## Consuming the frontend assets
 
