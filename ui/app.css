@@ -20,35 +20,71 @@
   }
 }
 
+/* Explicit overrides for the Settings → Appearance → Theme picker. Any
+   value other than "system" pins the palette regardless of the OS
+   media query. "system" works by leaving data-theme absent. */
+:root[data-theme="light"] {
+  --bg: #f6f7f9;
+  --fg: #1c1f23;
+  --muted: #6b7178;
+  --card-bg: #ffffff;
+  --card-border: #d8dde3;
+}
+:root[data-theme="dark"] {
+  --bg: #1c1f23;
+  --fg: #e8eaed;
+  --muted: #9aa0a6;
+  --card-bg: #25282d;
+  --card-border: #383c42;
+}
+
 * { box-sizing: border-box; }
 
-body {
+/* Full-height, no-scroll body so the app chrome stays put and only
+   the tree pane scrolls. The pre-login / non-app-pane fallback is a
+   normal scrolling document (overrides below). */
+html, body {
+  height: 100%;
   margin: 0;
+}
+
+body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   background: var(--bg);
   color: var(--fg);
   line-height: 1.4;
+  overflow: hidden;
 }
 
 main {
-  max-width: 640px;
+  height: 100%;
+  max-width: min(1200px, 100%);
   margin: 0 auto;
-  padding: 1.5rem;
+  padding: 1rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
-/* App-mode view shows a two-pane vault layout; the detail pane needs
-   room to render long credentials on a single line, so the container
-   relaxes its CLI-style narrow cap when this view is mounted. */
-body:has(#app-pane:not([hidden])) main {
-  max-width: min(1200px, 100%);
+/* Pre-login / loading view: restore normal page scrolling since the
+   inner panes don't exist yet. */
+body:has(#login-screen:not([hidden])) {
+  overflow: auto;
+}
+body:has(#login-screen:not([hidden])) main {
+  display: block;
+  height: auto;
 }
 
 header {
+  flex: 0 0 auto;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   margin-bottom: 1.25rem;
 }
+
+.banner { flex: 0 0 auto; }
 
 h1 {
   font-size: 1.4rem;
@@ -110,6 +146,7 @@ dl.status dd { margin: 0; font-variant-numeric: tabular-nums; word-break: break-
 }
 
 .app-toolbar {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -363,11 +400,24 @@ dl.status dd { margin: 0; font-variant-numeric: tabular-nums; word-break: break-
 
 .toast-dismiss:hover { opacity: 0.7; }
 
+#app-pane {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .app-layout {
+  flex: 1 1 auto;
   display: grid;
   grid-template-columns: max-content 1fr;
   gap: 0.75rem;
-  align-items: start;
+  align-items: stretch;
+  min-height: 0;
+}
+
+.page {
+  min-height: 0;
 }
 
 .page-nav {
@@ -398,6 +448,31 @@ dl.status dd { margin: 0; font-variant-numeric: tabular-nums; word-break: break-
   grid-template-columns: minmax(180px, max-content) minmax(320px, 1fr);
   gap: 0.75rem;
   align-items: stretch;
+  min-height: 0;
+  height: 100%;
+}
+
+/* Tree pane is the only scroll region in app-mode. The detail pane
+   stays fixed; long forms inside it would overflow, but that's an
+   intentional ceiling — long creds should fit. */
+#tree-pane {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+#detail-pane {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.settings-layout {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.audit-layout {
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .settings-layout { display: block; }
@@ -648,4 +723,12 @@ dl.status dd { margin: 0; font-variant-numeric: tabular-nums; word-break: break-
 .header-actions {
   display: inline-flex;
   gap: 0.5rem;
+}
+
+.audit-list {
+  margin: 0.3rem 0 1rem;
+  padding-left: 1.25rem;
+}
+.audit-list li {
+  margin: 0.15rem 0;
 }

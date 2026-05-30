@@ -50,7 +50,9 @@
         <div class="app-layout">
           <nav id="page-nav" class="page-nav" aria-label="Sections">
             <button id="nav-vault" type="button" class="nav-btn active" data-page="vault">Vault</button>
+            <button id="nav-audit" type="button" class="nav-btn" data-page="audit" hidden>Audit</button>
             <button id="nav-settings" type="button" class="nav-btn" data-page="settings">Settings</button>
+            <button id="nav-device-settings" type="button" class="nav-btn" data-page="device-settings" hidden>Device Settings</button>
           </nav>
           <div id="page-vault" class="page vault-layout">
             <div id="tree-pane" class="card tree" aria-label="Vault tree">
@@ -60,9 +62,19 @@
               <p class="muted">Select an entry to inspect.</p>
             </div>
           </div>
+          <div id="page-audit" class="page audit-layout" hidden>
+            <div id="audit-pane" class="card audit" aria-live="polite">
+              <p class="muted">Loading audit…</p>
+            </div>
+          </div>
           <div id="page-settings" class="page settings-layout" hidden>
             <div id="settings-pane" class="card settings" aria-live="polite">
               <p class="muted">Loading settings…</p>
+            </div>
+          </div>
+          <div id="page-device-settings" class="page settings-layout" hidden>
+            <div id="device-settings-pane" class="card settings" aria-live="polite">
+              <p class="muted">Loading device settings…</p>
             </div>
           </div>
         </div>
@@ -86,9 +98,9 @@
     <div id="discard-overlay" class="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="discard-title">
       <div class="modal card">
         <h2 id="discard-title">Unsaved changes</h2>
-        <p id="discard-body" class="muted">You have edits that haven't been written to the device.</p>
+        <p id="discard-body" class="muted">You have unsaved changes.</p>
         <div class="actions">
-          <button id="discard-write" type="button">Write to device</button>
+          <button id="discard-write" type="button">Save</button>
           <button id="discard-drop" type="button">Discard changes</button>
           <button id="discard-cancel" type="button">Cancel</button>
         </div>

@@ -36,10 +36,16 @@ const discardDropBtn = document.getElementById("discard-drop");
 const discardCancelBtn = document.getElementById("discard-cancel");
 const bannerEl = document.getElementById("banner");
 const navVaultBtn = document.getElementById("nav-vault");
+const navAuditBtn = document.getElementById("nav-audit");
 const navSettingsBtn = document.getElementById("nav-settings");
+const navDeviceSettingsBtn = document.getElementById("nav-device-settings");
 const pageVault = document.getElementById("page-vault");
+const pageAudit = document.getElementById("page-audit");
 const pageSettings = document.getElementById("page-settings");
+const pageDeviceSettings = document.getElementById("page-device-settings");
 const settingsPane = document.getElementById("settings-pane");
+const deviceSettingsPane = document.getElementById("device-settings-pane");
+const auditPane = document.getElementById("audit-pane");
 
 // Single live status from the last GetStatus call. Other views read
 // this rather than re-fetching, so a click that mutates pane visibility
@@ -117,6 +123,134 @@ let authState = { loggedIn: false, server: "", loginName: "" };
 // True while WaitForLogin is pending. The login button flips into a
 // "waiting for browser…" affordance and Cancel becomes available.
 let loginPending = false;
+
+// runAudit asks the backend for the audit report and paints it into
+// the Audit pane. Re-runs every time the user switches into the
+// Audit tab — the vault is the source of truth and audit results
+// must reflect what's saved, not what's in the dirty editor.
+async function runAudit() {
+  auditPane.innerHTML = '<p class="muted">Running audit…</p>';
+  let res;
+  try {
+    // staleAfterDays=0 disables the stale check; backends without
+    // an Updated timestamp (like passbox-companion) would have
+    // nothing to fire on anyway. UI can grow a slider later.
+    res = await window.go.gui.App.AuditVault({ StaleAfter: 0 });
+  } catch (e) {
+    auditPane.innerHTML = `<p class="error">${escapeHtml(e && e.message ? e.message : String(e))}</p>`;
+    return;
+  }
+  if (res && res.error) {
+    auditPane.innerHTML = `<p class="error">${escapeHtml(res.error)}</p>`;
+    return;
+  }
+  const rep = (res && res.report) || {};
+  auditPane.innerHTML = "";
+
+  const groups = [
+    { title: "Weak passwords", items: (rep.weak || []).map((w) => `${w.id}  — ${w.reason}`) },
+    { title: "Reused passwords", items: (rep.reused || []).map((g) => g.join(", ")) },
+    { title: "Duplicates", items: (rep.duplicates || []).map((g) => g.join(", ")) },
+    { title: "Stale", items: rep.stale || [] },
+  ];
+
+  let any = false;
+  for (const g of groups) {
+    if (!g.items.length) continue;
+    any = true;
+    const h = document.createElement("h3");
+    h.textContent = `${g.title} (${g.items.length})`;
+    auditPane.appendChild(h);
+    const ul = document.createElement("ul");
+    ul.className = "audit-list";
+    for (const item of g.items) {
+      const li = document.createElement("li");
+      li.textContent = item;
+      ul.appendChild(li);
+    }
+    auditPane.appendChild(ul);
+  }
+
+  if (caps.breachCheck) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Check for breaches (HIBP)";
+    btn.addEventListener("click", () => runBreachCheck(btn));
+    auditPane.appendChild(btn);
+  }
+
+  if (!any && !caps.breachCheck) {
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = "No issues found.";
+    auditPane.appendChild(p);
+  }
+}
+
+// runBreachCheck collects every cred's password from the cached
+// vault, sends them to CheckBreach, and appends results to the audit
+// pane. The plaintext stays Go-side once handed off — JS doesn't
+// keep its own copy after the call returns.
+async function runBreachCheck(btn) {
+  btn.disabled = true;
+  btn.textContent = "Checking…";
+  const passwords = [];
+  const seen = new Set();
+  function walk(node) {
+    for (const k of Object.keys(node)) {
+      const n = node[k];
+      if (n.children) { walk(n.children); continue; }
+      if (n.password && !seen.has(n.password)) {
+        seen.add(n.password);
+        passwords.push(n.password);
+      }
+    }
+  }
+  if (vaultTree) walk(vaultTree);
+  let counts;
+  try {
+    counts = await window.go.gui.App.CheckBreach(passwords);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = "Check for breaches (HIBP)";
+    showToast(e && e.message ? e.message : String(e), "err");
+    return;
+  }
+  const entries = Object.entries(counts || {});
+  const h = document.createElement("h3");
+  h.textContent = `Breached passwords (${entries.length})`;
+  auditPane.appendChild(h);
+  if (!entries.length) {
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = "No breached passwords found.";
+    auditPane.appendChild(p);
+  } else {
+    const ul = document.createElement("ul");
+    ul.className = "audit-list";
+    entries.sort((a, b) => b[1] - a[1]);
+    for (const [, count] of entries) {
+      const li = document.createElement("li");
+      li.textContent = `password seen in ${count.toLocaleString()} breaches`;
+      ul.appendChild(li);
+    }
+    auditPane.appendChild(ul);
+  }
+  btn.disabled = false;
+  btn.textContent = "Check for breaches (HIBP)";
+}
+
+// applyTheme pins document.documentElement.dataset.theme so the CSS
+// overrides in app.css kick in. "" / "system" / unknown values clear
+// the attribute and fall back to prefers-color-scheme.
+function applyTheme(name) {
+  const root = document.documentElement;
+  if (name === "light" || name === "dark") {
+    root.dataset.theme = name;
+  } else {
+    delete root.dataset.theme;
+  }
+}
 
 // Search state. searchQuery is the current input value; searchHits is
 // the Set of cred IDs the backend's Search returned (or null when the
@@ -594,7 +728,15 @@ function renderTree() {
   }
   const root = renderChildren(vaultTree, []);
   if (root.children.length === 0) {
-    treePane.innerHTML = '<p class="muted">(empty vault)</p>';
+    // Distinguish "search returned nothing" from "vault is empty" so
+    // the user knows their query filtered everything out vs. there
+    // genuinely being no entries.
+    if (searchHits && searchHits.size === 0) {
+      treePane.innerHTML =
+        `<p class="muted">No matches for "${escapeHtml(searchQuery)}".</p>`;
+    } else {
+      treePane.innerHTML = '<p class="muted">(empty vault)</p>';
+    }
     return;
   }
   treePane.appendChild(root);
@@ -1885,12 +2027,22 @@ async function switchPage(target) {
   }
   currentPage = target;
   pageVault.hidden = target !== "vault";
+  pageAudit.hidden = target !== "audit";
   pageSettings.hidden = target !== "settings";
+  pageDeviceSettings.hidden = target !== "device-settings";
   navVaultBtn.classList.toggle("active", target === "vault");
+  navAuditBtn.classList.toggle("active", target === "audit");
   navSettingsBtn.classList.toggle("active", target === "settings");
+  navDeviceSettingsBtn.classList.toggle("active", target === "device-settings");
   applyDirty();
   if (target === "settings" && settings === null) {
     await reloadSettings();
+  } else if (target === "device-settings" && settings === null) {
+    await reloadSettings();
+  } else if (target === "device-settings") {
+    renderDeviceSettings();
+  } else if (target === "audit") {
+    await runAudit();
   }
 }
 
@@ -1906,8 +2058,13 @@ async function reloadSettings() {
       return;
     }
     settings = res.settings;
+    // Apply the persisted theme as soon as settings land — startup
+    // calls this once before the user ever opens the Settings tab,
+    // so the whole window paints in the chosen palette from the get-go.
+    if (settings && settings.appearance) applyTheme(settings.appearance.theme);
     clearSettingsDirty();
     renderSettings();
+    if (caps.deviceSettings) renderDeviceSettings();
   } catch (e) {
     settingsPane.innerHTML =
       `<p class="error">${escapeHtml(e && e.message ? e.message : String(e))}</p>`;
@@ -1944,17 +2101,9 @@ function renderSettings() {
       { value: "light",  label: "Light" },
       { value: "dark",   label: "Dark" },
     ],
-    onInput: (v) => { settings.appearance.theme = v; markSettingsDirty(); revalidateConfig(); },
+    onInput: (v) => { settings.appearance.theme = v; applyTheme(v); markSettingsDirty(); revalidateConfig(); },
   }));
   settingsPane.appendChild(appearance);
-
-  const clip = section("Clipboard");
-  clip.appendChild(uintField({
-    label: "Clear after (s) — 0 disables",
-    value: settings.clipboard.clearAfterSeconds,
-    onInput: (n) => { settings.clipboard.clearAfterSeconds = n; markSettingsDirty(); revalidateConfig(); },
-  }));
-  settingsPane.appendChild(clip);
 
   const sec = section("Security");
   sec.appendChild(uintField({
@@ -1995,85 +2144,95 @@ function renderSettings() {
     settingsPane.appendChild(srv);
   }
 
-  // --- Device-only sections, gated on caps.deviceSettings ---------
+  revalidateConfig();
+}
 
-  if (caps.deviceSettings) {
-    const dev = settings.device;
-
-    const devSec = section("Device security");
-    devSec.appendChild(uintField({
-      label: "Auto-lock timeout (s)",
-      value: dev.security.timeoutBeforeAutoLock,
-      onInput: (n) => { dev.security.timeoutBeforeAutoLock = n; markSettingsDirty(); revalidateConfig(); },
-    }));
-    devSec.appendChild(uintField({
-      label: "USB disconnect lock timeout (s)",
-      value: dev.security.timeoutBeforeUSBDisconnectLock,
-      onInput: (n) => { dev.security.timeoutBeforeUSBDisconnectLock = n; markSettingsDirty(); revalidateConfig(); },
-    }));
-    settingsPane.appendChild(devSec);
-
-    const oled = section("OLED Protection");
-    oled.appendChild(uintField({
-      label: "Screensaver after (s)",
-      value: dev.oledProtection.timeoutBeforeScreenSaver,
-      onInput: (n) => { dev.oledProtection.timeoutBeforeScreenSaver = n; markSettingsDirty(); revalidateConfig(); },
-    }));
-    oled.appendChild(uintField({
-      label: "Sleep after (s)",
-      value: dev.oledProtection.timeoutBeforeSleep,
-      onInput: (n) => { dev.oledProtection.timeoutBeforeSleep = n; markSettingsDirty(); revalidateConfig(); },
-    }));
-
-    const clk = subSection("Screensaver — Clock");
-    clk.appendChild(boolField({
-      label: "Enabled",
-      value: dev.oledProtection.screenSaver.clock.enabled,
-      onInput: (v) => { dev.oledProtection.screenSaver.clock.enabled = v; markSettingsDirty(); revalidateConfig(); },
-    }));
-    clk.appendChild(uintField({
-      label: "Timeout between animations (s)",
-      value: dev.oledProtection.screenSaver.clock.timeoutBetweenAnimations,
-      onInput: (n) => { dev.oledProtection.screenSaver.clock.timeoutBetweenAnimations = n; markSettingsDirty(); revalidateConfig(); },
-    }));
-    oled.appendChild(clk);
-
-    const anim = subSection("Screensaver — Animations");
-    anim.appendChild(boolField({
-      label: "Enabled",
-      value: dev.oledProtection.screenSaver.animations.enabled,
-      onInput: (v) => { dev.oledProtection.screenSaver.animations.enabled = v; markSettingsDirty(); revalidateConfig(); },
-    }));
-    anim.appendChild(uintField({
-      label: "Timeout between clock (s)",
-      value: dev.oledProtection.screenSaver.animations.timeoutBetweenClock,
-      onInput: (n) => { dev.oledProtection.screenSaver.animations.timeoutBetweenClock = n; markSettingsDirty(); revalidateConfig(); },
-    }));
-    anim.appendChild(boolField({
-      label: "Raindrops",
-      value: dev.oledProtection.screenSaver.animations.raindrops.enabled,
-      onInput: (v) => { dev.oledProtection.screenSaver.animations.raindrops.enabled = v; markSettingsDirty(); revalidateConfig(); },
-    }));
-    oled.appendChild(anim);
-    settingsPane.appendChild(oled);
-
-    const cl = section("Clock");
-    cl.appendChild(intField({
-      label: "Timezone offset (minutes)",
-      value: dev.clock.timezoneOffset,
-      onInput: (n) => { dev.clock.timezoneOffset = n; markSettingsDirty(); revalidateConfig(); },
-    }));
-    settingsPane.appendChild(cl);
-
-    const vl = section("Volume Label");
-    vl.appendChild(textFieldSimple({
-      label: "Label",
-      value: dev.volumeLabel,
-      onInput: (v) => { dev.volumeLabel = v; markSettingsDirty(); revalidateConfig(); },
-      hint: "takes effect next Disk mount",
-    }));
-    settingsPane.appendChild(vl);
+// renderDeviceSettings paints the device-only sections into the
+// separate Device Settings pane. Only called when caps.deviceSettings
+// is true; the nav tab is hidden otherwise so this never runs on
+// host-side backends.
+function renderDeviceSettings() {
+  deviceSettingsPane.innerHTML = "";
+  if (!settings) {
+    deviceSettingsPane.innerHTML = '<p class="muted">No settings loaded.</p>';
+    return;
   }
+  ensureDefaultSubSections(settings);
+  const dev = settings.device;
+
+  const devSec = section("Device security");
+  devSec.appendChild(uintField({
+    label: "Auto-lock timeout (s)",
+    value: dev.security.timeoutBeforeAutoLock,
+    onInput: (n) => { dev.security.timeoutBeforeAutoLock = n; markSettingsDirty(); revalidateConfig(); },
+  }));
+  devSec.appendChild(uintField({
+    label: "USB disconnect lock timeout (s)",
+    value: dev.security.timeoutBeforeUSBDisconnectLock,
+    onInput: (n) => { dev.security.timeoutBeforeUSBDisconnectLock = n; markSettingsDirty(); revalidateConfig(); },
+  }));
+  deviceSettingsPane.appendChild(devSec);
+
+  const oled = section("OLED Protection");
+  oled.appendChild(uintField({
+    label: "Screensaver after (s)",
+    value: dev.oledProtection.timeoutBeforeScreenSaver,
+    onInput: (n) => { dev.oledProtection.timeoutBeforeScreenSaver = n; markSettingsDirty(); revalidateConfig(); },
+  }));
+  oled.appendChild(uintField({
+    label: "Sleep after (s)",
+    value: dev.oledProtection.timeoutBeforeSleep,
+    onInput: (n) => { dev.oledProtection.timeoutBeforeSleep = n; markSettingsDirty(); revalidateConfig(); },
+  }));
+
+  const clk = subSection("Screensaver — Clock");
+  clk.appendChild(boolField({
+    label: "Enabled",
+    value: dev.oledProtection.screenSaver.clock.enabled,
+    onInput: (v) => { dev.oledProtection.screenSaver.clock.enabled = v; markSettingsDirty(); revalidateConfig(); },
+  }));
+  clk.appendChild(uintField({
+    label: "Timeout between animations (s)",
+    value: dev.oledProtection.screenSaver.clock.timeoutBetweenAnimations,
+    onInput: (n) => { dev.oledProtection.screenSaver.clock.timeoutBetweenAnimations = n; markSettingsDirty(); revalidateConfig(); },
+  }));
+  oled.appendChild(clk);
+
+  const anim = subSection("Screensaver — Animations");
+  anim.appendChild(boolField({
+    label: "Enabled",
+    value: dev.oledProtection.screenSaver.animations.enabled,
+    onInput: (v) => { dev.oledProtection.screenSaver.animations.enabled = v; markSettingsDirty(); revalidateConfig(); },
+  }));
+  anim.appendChild(uintField({
+    label: "Timeout between clock (s)",
+    value: dev.oledProtection.screenSaver.animations.timeoutBetweenClock,
+    onInput: (n) => { dev.oledProtection.screenSaver.animations.timeoutBetweenClock = n; markSettingsDirty(); revalidateConfig(); },
+  }));
+  anim.appendChild(boolField({
+    label: "Raindrops",
+    value: dev.oledProtection.screenSaver.animations.raindrops.enabled,
+    onInput: (v) => { dev.oledProtection.screenSaver.animations.raindrops.enabled = v; markSettingsDirty(); revalidateConfig(); },
+  }));
+  oled.appendChild(anim);
+  deviceSettingsPane.appendChild(oled);
+
+  const cl = section("Clock");
+  cl.appendChild(intField({
+    label: "Timezone offset (minutes)",
+    value: dev.clock.timezoneOffset,
+    onInput: (n) => { dev.clock.timezoneOffset = n; markSettingsDirty(); revalidateConfig(); },
+  }));
+  deviceSettingsPane.appendChild(cl);
+
+  const vl = section("Volume Label");
+  vl.appendChild(textFieldSimple({
+    label: "Label",
+    value: dev.volumeLabel,
+    onInput: (v) => { dev.volumeLabel = v; markSettingsDirty(); revalidateConfig(); },
+    hint: "takes effect next Disk mount",
+  }));
+  deviceSettingsPane.appendChild(vl);
 
   revalidateConfig();
 }
@@ -2272,7 +2431,9 @@ disableBtn.addEventListener("click", onDisable);
 reloadTreeBtn.addEventListener("click", onReloadClick);
 saveBtn.addEventListener("click", onSave);
 navVaultBtn.addEventListener("click", () => switchPage("vault"));
+navAuditBtn.addEventListener("click", () => switchPage("audit"));
 navSettingsBtn.addEventListener("click", () => switchPage("settings"));
+navDeviceSettingsBtn.addEventListener("click", () => switchPage("device-settings"));
 logoutBtn.addEventListener("click", onLogout);
 loginBeginBtn.addEventListener("click", onBeginLogin);
 loginCancelBtn.addEventListener("click", onCancelLogin);
@@ -2490,6 +2651,8 @@ window.addEventListener("DOMContentLoaded", () => whenBindingsReady(async () => 
   refreshBtn.hidden = !caps.deviceMgmt;
   disableBtn.hidden = !caps.deviceMgmt;
   navSettingsBtn.hidden = !caps.appSettings;
+  navAuditBtn.hidden = !caps.audit;
+  navDeviceSettingsBtn.hidden = !caps.deviceSettings;
   logoutBtn.hidden = !caps.login;
 
   if (caps.login) {
@@ -2522,6 +2685,12 @@ window.addEventListener("DOMContentLoaded", () => whenBindingsReady(async () => 
     lastStatus = { connected: true, mode: "app" };
     applyView();
   }
+
+  // Preload settings so the persisted theme applies at startup,
+  // before the user ever opens the Settings tab. Safe to do as soon
+  // as we know we're logged in (or have a non-login backend) — the
+  // ReadConfig binding doesn't require an unlocked vault.
+  if (authState.loggedIn) reloadSettings();
 
   // The runtime injects EventsOn alongside the bound App; we register
   // the close-request listener here so the prompt runs even on the very
