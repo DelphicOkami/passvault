@@ -29,6 +29,10 @@ const reloadTreeBtn = document.getElementById("reload-tree");
 const saveBtn = document.getElementById("save-vault");
 const dirtyIndicator = document.getElementById("dirty-indicator");
 const toastEl = document.getElementById("toast");
+const moveOverlay = document.getElementById("move-overlay");
+const moveBody = document.getElementById("move-body");
+const moveList = document.getElementById("move-list");
+const moveCancelBtn = document.getElementById("move-cancel");
 const discardOverlay = document.getElementById("discard-overlay");
 const discardBody = document.getElementById("discard-body");
 const discardWriteBtn = document.getElementById("discard-write");
@@ -1744,6 +1748,7 @@ function contextMenuItems(parts, node) {
   }
   if (!isRoot) {
     items.push({ label: "Rename", run: () => onRename(parts) });
+    items.push({ label: "Move…", run: () => onMove(parts, node) });
     items.push({ label: "Delete", run: () => onDelete(parts, dir) });
     items.push({ label: "Cut", run: () => onCutOrCopy(parts, "mv") });
     items.push({ label: "Copy", run: () => onCutOrCopy(parts, "cp") });
@@ -1818,6 +1823,73 @@ async function onNewCred(parentParts) {
   selectedPath = parentParts.concat(key);
   renderTree();
   renderDetail(selectedPath, resolveNode(vaultTree, selectedPath));
+}
+
+// onMove opens a modal listing every folder (root included) as a
+// candidate destination. Picking a folder calls ApplyMv with the
+// source path → that folder's path. The picker hides destinations
+// that would be no-ops (current parent) or cycles (descendant of the
+// source, when the source is a folder).
+async function onMove(parts, node) {
+  if (!vaultTree) return;
+  const srcPath = pathToString(parts);
+  const srcParent = pathKey(parts.slice(0, -1));
+  const srcDir = isDir(node);
+  const srcKey = pathKey(parts);
+
+  // Collect every folder as {parts, label, depth}. Root first.
+  const folders = [{ parts: [], depth: 0 }];
+  function collect(children, prefix) {
+    for (const k of sortedKeys(children)) {
+      const n = children[k];
+      if (!isDir(n)) continue;
+      const p = prefix.concat(k);
+      folders.push({ parts: p, depth: prefix.length + 1 });
+      collect(n.children, p);
+    }
+  }
+  collect(vaultTree, []);
+
+  moveBody.textContent = `Move "${displayName(parts[parts.length - 1])}" to:`;
+  moveList.innerHTML = "";
+  for (const f of folders) {
+    const fkey = pathKey(f.parts);
+    if (fkey === srcParent) continue; // already there
+    if (srcDir && (fkey === srcKey ||
+        fkey.startsWith(srcKey + "/"))) continue; // descendant of source
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.style.paddingLeft = `${0.55 + f.depth * 0.9}rem`;
+    btn.textContent = f.parts.length === 0
+      ? "/ (root)"
+      : displayName(f.parts[f.parts.length - 1]);
+    btn.addEventListener("click", async () => {
+      moveOverlay.hidden = true;
+      const dstDir = pathToString(f.parts);
+      const dst = dstDir === ""
+        ? parts[parts.length - 1]
+        : dstDir + "/" + parts[parts.length - 1];
+      const res = await window.go.gui.App.ApplyMv(vaultTree, srcPath, dst);
+      if (res.error) { announceSaveError(res.error); return; }
+      vaultTree = res.tree;
+      selectedPath = f.parts.concat(parts[parts.length - 1]);
+      markDirty();
+      expanded.add(pathKey(f.parts));
+      renderTree();
+      const newNode = resolveNode(vaultTree, selectedPath);
+      if (newNode) renderDetail(selectedPath, newNode);
+    });
+    li.appendChild(btn);
+    moveList.appendChild(li);
+  }
+  if (!moveList.children.length) {
+    const li = document.createElement("li");
+    li.className = "muted";
+    li.textContent = "(no valid destinations)";
+    moveList.appendChild(li);
+  }
+  moveOverlay.hidden = false;
 }
 
 async function onRename(parts) {
@@ -2425,6 +2497,8 @@ async function runSearch(query) {
   renderTree();
 }
 
+moveCancelBtn.addEventListener("click", () => { moveOverlay.hidden = true; });
+
 refreshBtn.addEventListener("click", refresh);
 enableBtn.addEventListener("click", onEnable);
 disableBtn.addEventListener("click", onDisable);
@@ -2579,9 +2653,56 @@ treePane.addEventListener("dragleave", (e) => {
 });
 treePane.addEventListener("drop", (e) => {
   treePane.classList.remove("drop-target");
+  stopDragAutoScroll();
   if (e.target.closest(".row.dir")) return;
   handleDrop(e, []);
 });
+
+// Auto-scroll the tree pane when the cursor lingers near its top or
+// bottom edge during a drag. Single pane-level listener (events from
+// per-row dragovers bubble up here) so we don't have to touch each
+// row's handler.
+const DRAG_AUTOSCROLL_ZONE_PX = 40;
+const DRAG_AUTOSCROLL_SPEED_PX = 12;
+let dragAutoScrollRaf = 0;
+let dragAutoScrollDir = 0;
+
+treePane.addEventListener("dragover", (e) => {
+  if (!hasPassboxDrag(e)) return;
+  const r = treePane.getBoundingClientRect();
+  const y = e.clientY;
+  if (y < r.top + DRAG_AUTOSCROLL_ZONE_PX) {
+    dragAutoScrollDir = -1;
+  } else if (y > r.bottom - DRAG_AUTOSCROLL_ZONE_PX) {
+    dragAutoScrollDir = 1;
+  } else {
+    dragAutoScrollDir = 0;
+  }
+  if (dragAutoScrollDir !== 0 && !dragAutoScrollRaf) {
+    const tick = () => {
+      if (dragAutoScrollDir === 0) {
+        dragAutoScrollRaf = 0;
+        return;
+      }
+      treePane.scrollTop += dragAutoScrollDir * DRAG_AUTOSCROLL_SPEED_PX;
+      dragAutoScrollRaf = requestAnimationFrame(tick);
+    };
+    dragAutoScrollRaf = requestAnimationFrame(tick);
+  }
+});
+
+function stopDragAutoScroll() {
+  dragAutoScrollDir = 0;
+  if (dragAutoScrollRaf) {
+    cancelAnimationFrame(dragAutoScrollRaf);
+    dragAutoScrollRaf = 0;
+  }
+}
+
+// dragend on the document catches the case where the drag is
+// cancelled (Esc, or dropped outside the pane) — we always want to
+// stop the scroll loop.
+document.addEventListener("dragend", stopDragAutoScroll);
 // Wails v2 injects window.go.<package>.<Struct> via its own bootstrap
 // script, but doesn't expose a documented "ready" event we can listen
 // for. DOMContentLoaded sometimes races ahead of the injection, so poll
@@ -2728,6 +2849,7 @@ document.addEventListener("keydown", (e) => {
     // user never has to press Esc twice for a single visible thing.
     if (!overlay.hidden) { closeOverlay(); return; }
     if (!discardOverlay.hidden) { discardOverlay.hidden = true; return; }
+    if (!moveOverlay.hidden) { moveOverlay.hidden = true; return; }
     if (!toastEl.hidden) { showToast("", "ok"); return; }
   }
 });

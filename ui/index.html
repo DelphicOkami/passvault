@@ -95,6 +95,16 @@
         <ul id="picker-list" class="picker-list"></ul>
       </div>
     </div>
+    <div id="move-overlay" class="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="move-title">
+      <div class="modal card">
+        <h2 id="move-title">Move</h2>
+        <p id="move-body" class="muted">Pick the destination folder.</p>
+        <ul id="move-list" class="move-list"></ul>
+        <div class="actions">
+          <button id="move-cancel" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
     <div id="discard-overlay" class="overlay" hidden role="dialog" aria-modal="true" aria-labelledby="discard-title">
       <div class="modal card">
         <h2 id="discard-title">Unsaved changes</h2>
