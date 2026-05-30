@@ -1986,7 +1986,7 @@ async function saveVault() {
     }
     clearDirty();
     await reloadTree();
-    showToast("Written to device.", "ok");
+    showToast("Saved.", "ok");
     return true;
   } catch (e) {
     announceSaveError(e && e.message ? e.message : String(e));
@@ -2007,7 +2007,7 @@ async function saveSettings() {
     }
     clearSettingsDirty();
     await reloadSettings();
-    showToast("Written to device.", "ok");
+    showToast("Saved.", "ok");
     return true;
   } catch (e) {
     announceSaveError(e && e.message ? e.message : String(e));
