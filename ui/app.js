@@ -1866,10 +1866,11 @@ async function onMove(parts, node) {
       : displayName(f.parts[f.parts.length - 1]);
     btn.addEventListener("click", async () => {
       moveOverlay.hidden = true;
-      const dstDir = pathToString(f.parts);
-      const dst = dstDir === ""
-        ? parts[parts.length - 1]
-        : dstDir + "/" + parts[parts.length - 1];
+      // ApplyMv takes (src=full path, dst=destination directory).
+      // The backend computes the new leaf via dst/<leaf> internally —
+      // both consumers' Mv implementations follow the same mv(1)
+      // "drop into dir" convention as the drag-drop path.
+      const dst = pathToString(f.parts);
       const res = await window.go.gui.App.ApplyMv(vaultTree, srcPath, dst);
       if (res.error) { announceSaveError(res.error); return; }
       vaultTree = res.tree;
@@ -1982,6 +1983,15 @@ async function saveVault() {
     const res = await window.go.gui.App.WriteVault(vaultTree);
     if (res.error) {
       announceSaveError(res.error);
+      return false;
+    }
+    if (Array.isArray(res.failedPaths) && res.failedPaths.length > 0) {
+      const lines = res.failedPaths
+        .map((p) => `${p.path}: ${p.error}`)
+        .join("\n");
+      announceSaveError(
+        `Saved with ${res.failedPaths.length} failure(s):\n${lines}`);
+      await reloadTree();
       return false;
     }
     clearDirty();
