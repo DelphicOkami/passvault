@@ -41,6 +41,7 @@ type Node struct {
 type Cred struct {
 	Password        string  `json:"password"`
 	Username        *string `json:"username,omitempty"`
+	URL             *string `json:"url,omitempty"`
 	UsernameTrailer *string `json:"usernameTrailer,omitempty"`
 	PasswordTrailer *string `json:"passwordTrailer,omitempty"`
 	TotpTrailer     *string `json:"totpTrailer,omitempty"`

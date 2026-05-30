@@ -117,6 +117,19 @@ dl.status dd { margin: 0; font-variant-numeric: tabular-nums; word-break: break-
   margin-bottom: 0.75rem;
 }
 
+.app-toolbar input[type="search"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 320px;
+  margin-right: auto;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--card-border);
+  border-radius: 4px;
+  background: var(--card-bg);
+  color: var(--fg);
+  font-size: 0.9rem;
+}
+
 .dirty {
   color: var(--accent);
   font-size: 0.85rem;
@@ -597,3 +610,42 @@ dl.status dd { margin: 0; font-variant-numeric: tabular-nums; word-break: break-
   font-size: 1.1rem;
 }
 
+
+/* Login screen — used when Capabilities.Login is on and the backend
+   reports !loggedIn. Reuses .card for the surface and lays the form
+   out vertically. */
+.login-card {
+  max-width: 420px;
+  margin: 3rem auto 0;
+}
+
+.login-card h2 {
+  margin: 0 0 0.25rem;
+}
+
+.login-field {
+  display: block;
+  margin: 1rem 0 0.5rem;
+}
+
+.login-field span {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 0.25rem;
+}
+
+.login-field input {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--card-border);
+  border-radius: 4px;
+  background: var(--card-bg);
+  color: var(--fg);
+  font-size: 0.95rem;
+}
+
+.header-actions {
+  display: inline-flex;
+  gap: 0.5rem;
+}

@@ -66,6 +66,9 @@ func validateCred(name string, c *Cred) error {
 	if c.Username != nil && !asciiPrintable(*c.Username) {
 		return fmt.Errorf("non-ASCII character in username: %s", name)
 	}
+	if c.URL != nil && !asciiPrintable(*c.URL) {
+		return fmt.Errorf("non-ASCII character in url: %s", name)
+	}
 	for _, tr := range []*string{c.UsernameTrailer, c.PasswordTrailer, c.TotpTrailer} {
 		if !validTrailer(tr) {
 			return fmt.Errorf("bad trailer (want \"tab\" or \"enter\"): %s", name)

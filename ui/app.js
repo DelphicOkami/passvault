@@ -1,10 +1,21 @@
-// Phase 10.2: landing + enable/disable management flow. The frontend
-// owns the modal-poll loop that watches the device transition through
-// ConfirmPin into App mode; phase 12.1 will add a general status
-// ticker, but until then polling only runs while the overlay is open.
+// passvault shared UI. Drives any backend that implements
+// passvault.App: device-mgmt chrome (device picker, status ticker, PIN
+// overlay) is gated on Capabilities.DeviceMgmt; the login screen is
+// gated on Capabilities.Login; device-only config sections (OLED,
+// screensaver, FAT label, timezone) are gated on
+// Capabilities.DeviceSettings. The backend decides which chrome is
+// reachable; this file decides how each section is rendered.
 
 const card = document.getElementById("status-card");
 const refreshBtn = document.getElementById("refresh");
+const searchInput = document.getElementById("search-input");
+const logoutBtn = document.getElementById("logout");
+const loginScreen = document.getElementById("login-screen");
+const loginServerInput = document.getElementById("login-server");
+const loginBeginBtn = document.getElementById("login-begin");
+const loginCancelBtn = document.getElementById("login-cancel");
+const loginErrorEl = document.getElementById("login-error");
+const loginHintEl = document.getElementById("login-hint");
 const landing = document.getElementById("landing");
 const landingActions = document.getElementById("landing-actions");
 const appPane = document.getElementById("app-pane");
@@ -86,6 +97,36 @@ let bannerKind = null;
 // from App. Until then Write to device stays disabled even with edits.
 let mgmtBlockedByModeFlip = false;
 
+// Backend capabilities, loaded once at startup. The shape mirrors
+// passvault.Capabilities; defaults below are safe (everything off) so a
+// pre-load render doesn't try to call disabled methods.
+let caps = {
+  batchedWrites: false,
+  audit: false,
+  breachCheck: false,
+  deviceSettings: false,
+  appSettings: false,
+  deviceMgmt: false,
+  login: false,
+};
+
+// Login state for backends with Capabilities.Login. Only used to gate
+// the login screen — the rest of the UI doesn't care about Server /
+// LoginName beyond rendering them in the Settings page.
+let authState = { loggedIn: false, server: "", loginName: "" };
+// True while WaitForLogin is pending. The login button flips into a
+// "waiting for browser…" affordance and Cancel becomes available.
+let loginPending = false;
+
+// Search state. searchQuery is the current input value; searchHits is
+// the Set of cred IDs the backend's Search returned (or null when the
+// query is empty / no search active). Tree rendering filters against
+// this set: a cred is visible iff its path is in the set, a folder is
+// visible iff any descendant is.
+let searchQuery = "";
+let searchHits = null;
+let searchDebounce = null;
+
 // totpTimer is the active 1 s interval driving the live TOTP preview in
 // the currently-rendered cred form. Cleared whenever the detail pane is
 // re-rendered (selection change, reload, mutation) so a stale form
@@ -133,34 +174,52 @@ function renderStatus(s) {
 // clearing the in-memory tree.
 let wasInApp = false;
 
-// applyView decides which top-level pane is visible based on the last
-// status. App mode → app-pane; everything else (including transport
-// errors) → landing.
+// applyView decides which top-level pane is visible.
+//
+// Login-capable backend (caps.login):
+//   not logged in → login screen, everything else hidden.
+//   logged in → fall through to the post-login logic below.
+//
+// Device-mgmt backend (caps.deviceMgmt):
+//   App mode → app-pane; everything else → landing (device-not-ready
+//   card + Enable Management button).
+//
+// Otherwise (host-side backend with no lifecycle):
+//   always app-pane; landing stays hidden permanently.
 function applyView() {
-  const inApp = lastStatus && !lastStatus.error && lastStatus.mode === "app";
-  landing.hidden = inApp;
+  if (caps.login && !authState.loggedIn) {
+    loginScreen.hidden = false;
+    landing.hidden = true;
+    appPane.hidden = true;
+    return;
+  }
+  loginScreen.hidden = true;
+
+  let inApp;
+  if (caps.deviceMgmt) {
+    inApp = lastStatus && !lastStatus.error && lastStatus.mode === "app";
+    landing.hidden = inApp;
+    const canEnable = lastStatus && !lastStatus.error && lastStatus.mode === "connected";
+    landingActions.hidden = !canEnable;
+  } else {
+    // No device lifecycle to wait on — the vault is reachable as soon
+    // as we know we're logged in (or trivially logged in for backends
+    // without Login).
+    inApp = true;
+    landing.hidden = true;
+  }
   appPane.hidden = !inApp;
-  // Enable button is meaningful only when we have a live device that
-  // isn't already in app/drive mode. Hide otherwise so the user isn't
-  // tempted to click on a stale error.
-  const canEnable = lastStatus && !lastStatus.error && lastStatus.mode === "connected";
-  landingActions.hidden = !canEnable;
 
   if (inApp && !wasInApp) {
-    // Just entered App mode — load the tree. Errors render into the
-    // tree pane so the user sees them; no need to await here.
+    // Just entered the usable state — load the tree.
     reloadTree();
   } else if (!inApp && wasInApp) {
-    // Left App mode — drop the cached plaintext so a re-enter starts
-    // from a fresh read. Dirty edits are dropped with it; the device
-    // session is gone so there's nothing to save them against.
+    // Left the usable state (device dropped, or user signed out). Drop
+    // the cached plaintext so a re-enter starts from a fresh read.
     vaultTree = null;
     selectedPath = null;
     expanded.clear();
     clearDirty();
-    // 12.3: settings live behind the same App-mode gate, so drop them
-    // too. Re-entering will refetch on demand when the user clicks
-    // into the Settings tab.
     settings = null;
     clearSettingsDirty();
     settingsPane.innerHTML = '<p class="muted">Loading settings…</p>';
@@ -169,6 +228,7 @@ function applyView() {
 }
 
 async function refresh() {
+  if (!caps.deviceMgmt) return;
   refreshBtn.disabled = true;
   renderLoading();
   await fetchStatus();
@@ -267,6 +327,7 @@ function clearBanner() {
 // pause so a backgrounded GUI doesn't keep poking the device's CPU.
 function startStatusTicker() {
   stopStatusTicker();
+  if (!caps.deviceMgmt) return;
   if (document.hidden) return;
   statusTickerTimer = setInterval(() => {
     // The overlay-poll loop in onEnable is the bespoke fast 500 ms one
@@ -288,6 +349,7 @@ function stopStatusTicker() {
 // device is first reachable. Errors render via the toast, success is
 // silent.
 async function maybeAutoSyncTime() {
+  if (!caps.deviceMgmt) return;
   if (hasSyncedThisSession) return;
   hasSyncedThisSession = true;
   try {
@@ -543,9 +605,22 @@ function renderChildren(children, parentPath) {
   for (const key of sortedKeys(children)) {
     const node = children[key];
     const parts = parentPath.concat(key);
+    if (searchHits && !subtreeMatches(node, parts)) continue;
     ul.appendChild(renderNode(key, node, parts));
   }
   return ul;
+}
+
+// subtreeMatches reports whether a search filter is active and the
+// given node (or any descendant) hit. Used to hide both irrelevant
+// creds and folders whose contents don't match.
+function subtreeMatches(node, parts) {
+  if (!searchHits) return true;
+  if (!isDir(node)) return searchHits.has(pathKey(parts));
+  for (const k of Object.keys(node.children || {})) {
+    if (subtreeMatches(node.children[k], parts.concat(k))) return true;
+  }
+  return false;
 }
 
 function renderNode(key, node, parts) {
@@ -558,7 +633,10 @@ function renderNode(key, node, parts) {
 
   const twisty = document.createElement("span");
   twisty.className = "twisty";
-  const open = dir && expanded.has(pathKey(parts));
+  // Folders containing a search hit auto-expand so the matched cred is
+  // visible without a click. The user's manual expansion state still
+  // wins when no search is active.
+  const open = dir && (expanded.has(pathKey(parts)) || (searchHits !== null));
   twisty.textContent = dir ? (open ? "▾" : "▸") : "";
   row.appendChild(twisty);
 
@@ -685,30 +763,9 @@ function renderCredForm(parts, node) {
   // the embedded webview).
   form.addEventListener("submit", (e) => e.preventDefault());
 
-  // Name edits go through ApplyRename — same as the context-menu Rename
-  // action. We display the '_'→' ' form and convert back on blur so the
-  // user never has to type the storage separator.
-  const leaf = parts[parts.length - 1];
-  form.appendChild(textField({
-    label: "Name",
-    value: displayName(leaf),
-    onInput: () => { /* deferred until blur — see onBlur */ },
-    validate: (v) => callValidator("ValidateName", toStoredKey(v)),
-    onBlur: async (input) => {
-      const newKey = toStoredKey(input.value);
-      if (newKey === leaf) return null;
-      const res = await window.go.gui.App.ApplyRename(
-        vaultTree, pathToString(parts), newKey);
-      if (res.error) return res.error;
-      vaultTree = res.tree;
-      selectedPath = parts.slice(0, -1).concat(newKey);
-      markDirty();
-      const newNode = resolveNode(vaultTree, selectedPath);
-      renderTree();
-      if (newNode) renderDetail(selectedPath, newNode);
-      return null;
-    },
-  }));
+  // Name is set at creation time (see onNewCred's prompt) and changed
+  // afterwards via the context-menu Rename — no inline field, since
+  // it would duplicate the same ApplyRename binding.
 
   form.appendChild(textField({
     label: "Username",
@@ -718,6 +775,20 @@ function renderCredForm(parts, node) {
       node.username = v === "" ? null : v;
       markDirty();
     },
+    validate: (v) => v === "" ? "" : callValidator("ValidateUsername", v),
+  }));
+
+  form.appendChild(textField({
+    label: "URL",
+    value: node.url == null ? "" : node.url,
+    placeholder: "(not set)",
+    onInput: (v) => {
+      node.url = v === "" ? null : v;
+      markDirty();
+    },
+    // No dedicated ValidateURL binding yet — the firmware applies the
+    // same printable-ASCII rule to URL as to username, so reuse the
+    // username validator's vocabulary.
     validate: (v) => v === "" ? "" : callValidator("ValidateUsername", v),
   }));
 
@@ -1216,15 +1287,24 @@ function openPasswordGenerator(anchorRow, onAccept) {
     try {
       if (state.style === "random") {
         const r = state.random;
-        res = await window.go.gui.App.GenerateRandomPassword(
-          r.length, r.classes.upper, r.classes.lower, r.classes.digits, r.classes.symbols,
-          r.excludeAmbiguous,
-        );
+        // RandomOpts has no JSON tags so Wails marshals the Go field
+        // names verbatim. Keep keys in PascalCase to match.
+        res = await window.go.gui.App.GenerateRandom({
+          Length: r.length,
+          Upper: r.classes.upper,
+          Lower: r.classes.lower,
+          Digits: r.classes.digits,
+          Symbols: r.classes.symbols,
+          ExcludeAmbiguous: r.excludeAmbiguous,
+        });
       } else if (state.style === "xkcd" || state.style === "diceware") {
         const w = state[state.style];
-        res = await window.go.gui.App.GenerateXKCDPassword(
-          w.words, w.separator, w.number, w.symbol ? "!" : "",
-        );
+        res = await window.go.gui.App.GenerateXKCD({
+          Words: w.words,
+          Separator: w.separator,
+          Number: w.number,
+          Suffix: w.symbol ? "!" : "",
+        });
       } else if (state.style === "pin") {
         res = await window.go.gui.App.GeneratePIN(state.pin.length);
       }
@@ -1319,6 +1399,9 @@ function renderAdvancedTOTP(node) {
   return wrap;
 }
 
+// selectField accepts options either as plain strings (legacy, used by
+// the cred form's TOTP algo picker) or as {value, label} pairs (used by
+// the settings form's theme picker).
 function selectField({ label, value, options, onInput }) {
   const row = document.createElement("div");
   row.className = "field";
@@ -1328,9 +1411,15 @@ function selectField({ label, value, options, onInput }) {
   const sel = document.createElement("select");
   for (const opt of options) {
     const o = document.createElement("option");
-    o.value = opt;
-    o.textContent = opt;
-    if (opt === value) o.selected = true;
+    if (typeof opt === "string") {
+      o.value = opt;
+      o.textContent = opt;
+      if (opt === value) o.selected = true;
+    } else {
+      o.value = opt.value;
+      o.textContent = opt.label;
+      if (opt.value === value) o.selected = true;
+    }
     sel.appendChild(o);
   }
   sel.addEventListener("change", () => onInput(sel.value));
@@ -1825,105 +1914,195 @@ async function reloadSettings() {
   }
 }
 
-// renderSettings paints the whole form. Cheap to re-run end-to-end —
-// the form is fewer than 20 controls and re-rendering on every cross-
-// field re-validate keeps the "what does the device see right now"
-// invariant trivial to reason about.
+// renderSettings paints the whole form against the unified
+// passvault.config.Settings schema. App-level sections always render;
+// device-only sections (under settings.device) render only when
+// caps.deviceSettings is on. Cheap to re-run end-to-end — re-rendering
+// on every cross-field re-validate keeps the "what does the backend
+// see right now" invariant trivial to reason about.
 function renderSettings() {
   settingsPane.innerHTML = "";
   if (!settings) {
     settingsPane.innerHTML = '<p class="muted">No settings loaded.</p>';
     return;
   }
+  ensureDefaultSubSections(settings);
 
-  // Cross-field invariant: render at the top so the user spots the
-  // offending combination without scrolling.
   const globalErr = document.createElement("p");
   globalErr.className = "global-error error";
   globalErr.hidden = true;
   settingsPane.appendChild(globalErr);
 
-  // Security.
+  // --- App-level sections, always shown ---------------------------
+
+  const appearance = section("Appearance");
+  appearance.appendChild(selectField({
+    label: "Theme",
+    value: settings.appearance.theme || "system",
+    options: [
+      { value: "system", label: "Match system" },
+      { value: "light",  label: "Light" },
+      { value: "dark",   label: "Dark" },
+    ],
+    onInput: (v) => { settings.appearance.theme = v; markSettingsDirty(); revalidateConfig(); },
+  }));
+  settingsPane.appendChild(appearance);
+
+  const clip = section("Clipboard");
+  clip.appendChild(uintField({
+    label: "Clear after (s) — 0 disables",
+    value: settings.clipboard.clearAfterSeconds,
+    onInput: (n) => { settings.clipboard.clearAfterSeconds = n; markSettingsDirty(); revalidateConfig(); },
+  }));
+  settingsPane.appendChild(clip);
+
   const sec = section("Security");
   sec.appendChild(uintField({
-    label: "Auto-lock timeout (s)",
-    value: settings.security.timeoutBeforeAutoLock,
-    onInput: (n) => { settings.security.timeoutBeforeAutoLock = n; markSettingsDirty(); revalidateConfig(); },
+    label: "Auto-lock after (s)",
+    value: settings.security.autoLockSeconds,
+    onInput: (n) => { settings.security.autoLockSeconds = n; markSettingsDirty(); revalidateConfig(); },
   }));
-  sec.appendChild(uintField({
-    label: "USB disconnect lock timeout (s)",
-    value: settings.security.timeoutBeforeUSBDisconnectLock,
-    onInput: (n) => { settings.security.timeoutBeforeUSBDisconnectLock = n; markSettingsDirty(); revalidateConfig(); },
+  sec.appendChild(boolField({
+    label: "Lock when idle",
+    value: settings.security.lockOnIdle,
+    onInput: (v) => { settings.security.lockOnIdle = v; markSettingsDirty(); revalidateConfig(); },
+  }));
+  sec.appendChild(boolField({
+    label: "Enable breach checks (HIBP)",
+    value: settings.security.breachCheckEnabled,
+    onInput: (v) => { settings.security.breachCheckEnabled = v; markSettingsDirty(); revalidateConfig(); },
+  }));
+  sec.appendChild(boolField({
+    label: "Remember last folder",
+    value: settings.security.rememberLastFolderPath,
+    onInput: (v) => { settings.security.rememberLastFolderPath = v; markSettingsDirty(); revalidateConfig(); },
   }));
   settingsPane.appendChild(sec);
 
-  // OLED Protection (with nested ScreenSaver → Clock / Animations → Raindrops).
-  const oled = section("OLED Protection");
-  oled.appendChild(uintField({
-    label: "Screensaver after (s)",
-    value: settings.oledProtection.timeoutBeforeScreenSaver,
-    onInput: (n) => { settings.oledProtection.timeoutBeforeScreenSaver = n; markSettingsDirty(); revalidateConfig(); },
-  }));
-  oled.appendChild(uintField({
-    label: "Sleep after (s)",
-    value: settings.oledProtection.timeoutBeforeSleep,
-    onInput: (n) => { settings.oledProtection.timeoutBeforeSleep = n; markSettingsDirty(); revalidateConfig(); },
-  }));
+  if (caps.login) {
+    const srv = section("Server");
+    srv.appendChild(textFieldSimple({
+      label: "URL",
+      value: settings.server.url || "",
+      onInput: (v) => { settings.server.url = v; markSettingsDirty(); revalidateConfig(); },
+      hint: "edited via Sign in / Sign out — manual changes won't re-authenticate",
+    }));
+    srv.appendChild(textFieldSimple({
+      label: "Login name",
+      value: settings.server.loginName || "",
+      onInput: (v) => { settings.server.loginName = v; markSettingsDirty(); revalidateConfig(); },
+    }));
+    settingsPane.appendChild(srv);
+  }
 
-  // ScreenSaver → Clock.
-  const clk = subSection("Screensaver — Clock");
-  clk.appendChild(boolField({
-    label: "Enabled",
-    value: settings.oledProtection.screenSaver.clock.enabled,
-    onInput: (v) => { settings.oledProtection.screenSaver.clock.enabled = v; markSettingsDirty(); revalidateConfig(); },
-  }));
-  clk.appendChild(uintField({
-    label: "Timeout between animations (s)",
-    value: settings.oledProtection.screenSaver.clock.timeoutBetweenAnimations,
-    onInput: (n) => { settings.oledProtection.screenSaver.clock.timeoutBetweenAnimations = n; markSettingsDirty(); revalidateConfig(); },
-  }));
-  oled.appendChild(clk);
+  // --- Device-only sections, gated on caps.deviceSettings ---------
 
-  // ScreenSaver → Animations (Raindrops nested).
-  const anim = subSection("Screensaver — Animations");
-  anim.appendChild(boolField({
-    label: "Enabled",
-    value: settings.oledProtection.screenSaver.animations.enabled,
-    onInput: (v) => { settings.oledProtection.screenSaver.animations.enabled = v; markSettingsDirty(); revalidateConfig(); },
-  }));
-  anim.appendChild(uintField({
-    label: "Timeout between clock (s)",
-    value: settings.oledProtection.screenSaver.animations.timeoutBetweenClock,
-    onInput: (n) => { settings.oledProtection.screenSaver.animations.timeoutBetweenClock = n; markSettingsDirty(); revalidateConfig(); },
-  }));
-  anim.appendChild(boolField({
-    label: "Raindrops",
-    value: settings.oledProtection.screenSaver.animations.raindrops.enabled,
-    onInput: (v) => { settings.oledProtection.screenSaver.animations.raindrops.enabled = v; markSettingsDirty(); revalidateConfig(); },
-  }));
-  oled.appendChild(anim);
-  settingsPane.appendChild(oled);
+  if (caps.deviceSettings) {
+    const dev = settings.device;
 
-  // Clock.
-  const cl = section("Clock");
-  cl.appendChild(intField({
-    label: "Timezone offset (minutes)",
-    value: settings.clock.timezoneOffset,
-    onInput: (n) => { settings.clock.timezoneOffset = n; markSettingsDirty(); revalidateConfig(); },
-  }));
-  settingsPane.appendChild(cl);
+    const devSec = section("Device security");
+    devSec.appendChild(uintField({
+      label: "Auto-lock timeout (s)",
+      value: dev.security.timeoutBeforeAutoLock,
+      onInput: (n) => { dev.security.timeoutBeforeAutoLock = n; markSettingsDirty(); revalidateConfig(); },
+    }));
+    devSec.appendChild(uintField({
+      label: "USB disconnect lock timeout (s)",
+      value: dev.security.timeoutBeforeUSBDisconnectLock,
+      onInput: (n) => { dev.security.timeoutBeforeUSBDisconnectLock = n; markSettingsDirty(); revalidateConfig(); },
+    }));
+    settingsPane.appendChild(devSec);
 
-  // Volume Label.
-  const vl = section("Volume Label");
-  vl.appendChild(textFieldSimple({
-    label: "Label",
-    value: settings.volumeLabel,
-    onInput: (v) => { settings.volumeLabel = v; markSettingsDirty(); revalidateConfig(); },
-    hint: "takes effect next Disk mount",
-  }));
-  settingsPane.appendChild(vl);
+    const oled = section("OLED Protection");
+    oled.appendChild(uintField({
+      label: "Screensaver after (s)",
+      value: dev.oledProtection.timeoutBeforeScreenSaver,
+      onInput: (n) => { dev.oledProtection.timeoutBeforeScreenSaver = n; markSettingsDirty(); revalidateConfig(); },
+    }));
+    oled.appendChild(uintField({
+      label: "Sleep after (s)",
+      value: dev.oledProtection.timeoutBeforeSleep,
+      onInput: (n) => { dev.oledProtection.timeoutBeforeSleep = n; markSettingsDirty(); revalidateConfig(); },
+    }));
+
+    const clk = subSection("Screensaver — Clock");
+    clk.appendChild(boolField({
+      label: "Enabled",
+      value: dev.oledProtection.screenSaver.clock.enabled,
+      onInput: (v) => { dev.oledProtection.screenSaver.clock.enabled = v; markSettingsDirty(); revalidateConfig(); },
+    }));
+    clk.appendChild(uintField({
+      label: "Timeout between animations (s)",
+      value: dev.oledProtection.screenSaver.clock.timeoutBetweenAnimations,
+      onInput: (n) => { dev.oledProtection.screenSaver.clock.timeoutBetweenAnimations = n; markSettingsDirty(); revalidateConfig(); },
+    }));
+    oled.appendChild(clk);
+
+    const anim = subSection("Screensaver — Animations");
+    anim.appendChild(boolField({
+      label: "Enabled",
+      value: dev.oledProtection.screenSaver.animations.enabled,
+      onInput: (v) => { dev.oledProtection.screenSaver.animations.enabled = v; markSettingsDirty(); revalidateConfig(); },
+    }));
+    anim.appendChild(uintField({
+      label: "Timeout between clock (s)",
+      value: dev.oledProtection.screenSaver.animations.timeoutBetweenClock,
+      onInput: (n) => { dev.oledProtection.screenSaver.animations.timeoutBetweenClock = n; markSettingsDirty(); revalidateConfig(); },
+    }));
+    anim.appendChild(boolField({
+      label: "Raindrops",
+      value: dev.oledProtection.screenSaver.animations.raindrops.enabled,
+      onInput: (v) => { dev.oledProtection.screenSaver.animations.raindrops.enabled = v; markSettingsDirty(); revalidateConfig(); },
+    }));
+    oled.appendChild(anim);
+    settingsPane.appendChild(oled);
+
+    const cl = section("Clock");
+    cl.appendChild(intField({
+      label: "Timezone offset (minutes)",
+      value: dev.clock.timezoneOffset,
+      onInput: (n) => { dev.clock.timezoneOffset = n; markSettingsDirty(); revalidateConfig(); },
+    }));
+    settingsPane.appendChild(cl);
+
+    const vl = section("Volume Label");
+    vl.appendChild(textFieldSimple({
+      label: "Label",
+      value: dev.volumeLabel,
+      onInput: (v) => { dev.volumeLabel = v; markSettingsDirty(); revalidateConfig(); },
+      hint: "takes effect next Disk mount",
+    }));
+    settingsPane.appendChild(vl);
+  }
 
   revalidateConfig();
+}
+
+// ensureDefaultSubSections fills in missing sub-objects so the form
+// can dereference them safely. Go's omitzero drops zero-valued
+// sub-structs from the JSON payload — without this, a freshly-defaulted
+// Settings with no Device/Server section would crash the renderer on
+// `settings.device.security.timeoutBeforeAutoLock`.
+function ensureDefaultSubSections(s) {
+  if (!s.appearance) s.appearance = { theme: "system" };
+  if (!s.clipboard) s.clipboard = { clearAfterSeconds: 0 };
+  if (!s.security) s.security = {
+    autoLockSeconds: 0, lockOnIdle: false,
+    breachCheckEnabled: false, rememberLastFolderPath: false,
+  };
+  if (!s.server) s.server = { url: "", loginName: "" };
+  if (!s.device) s.device = {};
+  const d = s.device;
+  if (!d.security) d.security = { timeoutBeforeAutoLock: 0, timeoutBeforeUSBDisconnectLock: 0 };
+  if (!d.oledProtection) d.oledProtection = {};
+  if (!d.oledProtection.screenSaver) d.oledProtection.screenSaver = {};
+  if (!d.oledProtection.screenSaver.clock) d.oledProtection.screenSaver.clock = { enabled: false, timeoutBetweenAnimations: 0 };
+  if (!d.oledProtection.screenSaver.animations) d.oledProtection.screenSaver.animations = { enabled: false, timeoutBetweenClock: 0 };
+  if (!d.oledProtection.screenSaver.animations.raindrops) d.oledProtection.screenSaver.animations.raindrops = { enabled: false };
+  if (d.oledProtection.timeoutBeforeScreenSaver === undefined) d.oledProtection.timeoutBeforeScreenSaver = 0;
+  if (d.oledProtection.timeoutBeforeSleep === undefined) d.oledProtection.timeoutBeforeSleep = 0;
+  if (!d.clock) d.clock = { timezoneOffset: 0 };
+  if (d.volumeLabel === undefined) d.volumeLabel = "";
 }
 
 function section(title) {
@@ -2057,6 +2236,36 @@ async function onCloseRequested() {
   window.go.gui.App.ConfirmClose();
 }
 
+// Search input — debounced 150 ms so a fast typist doesn't queue up a
+// Search round-trip per keystroke. Clearing the input restores the
+// unfiltered tree.
+searchInput.addEventListener("input", () => {
+  if (searchDebounce) clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(() => runSearch(searchInput.value), 150);
+});
+
+async function runSearch(query) {
+  searchQuery = query.trim();
+  if (searchQuery === "") {
+    searchHits = null;
+    renderTree();
+    return;
+  }
+  let hits;
+  try {
+    hits = await window.go.gui.App.Search(searchQuery);
+  } catch (e) {
+    hits = null;
+  }
+  searchHits = new Set();
+  if (Array.isArray(hits)) {
+    for (const h of hits) {
+      if (h && typeof h.id === "string") searchHits.add(h.id);
+    }
+  }
+  renderTree();
+}
+
 refreshBtn.addEventListener("click", refresh);
 enableBtn.addEventListener("click", onEnable);
 disableBtn.addEventListener("click", onDisable);
@@ -2064,6 +2273,126 @@ reloadTreeBtn.addEventListener("click", onReloadClick);
 saveBtn.addEventListener("click", onSave);
 navVaultBtn.addEventListener("click", () => switchPage("vault"));
 navSettingsBtn.addEventListener("click", () => switchPage("settings"));
+logoutBtn.addEventListener("click", onLogout);
+loginBeginBtn.addEventListener("click", onBeginLogin);
+loginCancelBtn.addEventListener("click", onCancelLogin);
+loginServerInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !loginPending) {
+    e.preventDefault();
+    onBeginLogin();
+  }
+});
+
+// onBeginLogin kicks off the backend's login flow and then polls
+// WaitForLogin. The shared UI is intentionally backend-agnostic: it
+// never knows what BeginLogin actually does (Nextcloud Flow v2, a
+// mocked in-process server, anything else). All it does is collect a
+// server URL, show a "continue in browser" affordance, and wait.
+async function onBeginLogin() {
+  const server = (loginServerInput.value || "").trim();
+  if (!server) {
+    showLoginError("Enter a server URL to continue.");
+    return;
+  }
+  setLoginPending(true);
+  showLoginError("");
+  let init;
+  try {
+    init = await window.go.gui.App.BeginLogin(server);
+  } catch (e) {
+    setLoginPending(false);
+    showLoginError(e && e.message ? e.message : String(e));
+    return;
+  }
+  if (init && init.error) {
+    setLoginPending(false);
+    showLoginError(init.error);
+    return;
+  }
+  loginHintEl.textContent =
+    "Approve the request in your browser, then return here.";
+  // The backend has already attempted to open the URL where supported.
+  // Show it as a fallback so headless / unusual environments still have
+  // a clickable target.
+  if (init && init.loginURL) {
+    const link = document.createElement("a");
+    link.href = init.loginURL;
+    link.textContent = init.loginURL;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    loginHintEl.appendChild(document.createElement("br"));
+    loginHintEl.appendChild(link);
+  }
+
+  let status;
+  try {
+    status = await window.go.gui.App.WaitForLogin();
+  } catch (e) {
+    setLoginPending(false);
+    showLoginError(e && e.message ? e.message : String(e));
+    return;
+  }
+  if (!status || status.error) {
+    setLoginPending(false);
+    showLoginError((status && status.error) || "login failed");
+    return;
+  }
+  authState = {
+    loggedIn: !!status.loggedIn,
+    server: status.server || "",
+    loginName: status.loginName || "",
+  };
+  setLoginPending(false);
+  loginHintEl.textContent = "Enter your server URL to begin.";
+  loginServerInput.value = "";
+  applyView();
+}
+
+async function onCancelLogin() {
+  try {
+    await window.go.gui.App.CancelLogin();
+  } catch (e) {
+    // Best-effort — the backend's flow may already have torn down.
+  }
+  setLoginPending(false);
+  loginHintEl.textContent = "Enter your server URL to begin.";
+  showLoginError("");
+}
+
+async function onLogout() {
+  try {
+    const err = await window.go.gui.App.Logout();
+    if (err) {
+      showToast(translateError(err), "err");
+      return;
+    }
+  } catch (e) {
+    showToast(translateError(e && e.message ? e.message : String(e)), "err");
+    return;
+  }
+  authState = { loggedIn: false, server: "", loginName: "" };
+  // Force the wasInApp transition so applyView clears in-memory state.
+  wasInApp = true;
+  applyView();
+}
+
+function setLoginPending(pending) {
+  loginPending = pending;
+  loginBeginBtn.disabled = pending;
+  loginBeginBtn.textContent = pending ? "Waiting for approval…" : "Continue";
+  loginCancelBtn.hidden = !pending;
+  loginServerInput.disabled = pending;
+}
+
+function showLoginError(msg) {
+  if (!msg) {
+    loginErrorEl.hidden = true;
+    loginErrorEl.textContent = "";
+    return;
+  }
+  loginErrorEl.hidden = false;
+  loginErrorEl.textContent = msg;
+}
 
 // Right-clicking the empty area of the tree pane (not on a row) targets
 // the root, so "New folder" / "New credential" work even on a vault
@@ -2108,6 +2437,7 @@ function whenBindingsReady(fn) {
 // than one Passbox. With 0 or 1, it's a no-op — the existing
 // not-connected card / auto-selected single device covers those.
 async function pickDeviceIfMany() {
+  if (!caps.deviceMgmt) return;
   let res;
   try {
     res = await window.go.gui.App.DiscoverAll();
@@ -2143,9 +2473,56 @@ async function pickDeviceIfMany() {
 }
 
 window.addEventListener("DOMContentLoaded", () => whenBindingsReady(async () => {
-  await pickDeviceIfMany();
-  await refresh();
-  startStatusTicker();
+  // Capabilities is the very first call — every subsequent decision
+  // (login screen vs vault, status ticker vs static, settings sections
+  // visible) reads from it, so loading it before anything else paints
+  // avoids a flash of device-flavored chrome on host-only backends.
+  try {
+    caps = await window.go.gui.App.Capabilities();
+  } catch (e) {
+    // Fall back to host-only defaults if the binding isn't there yet —
+    // the runtime will eventually inject and the next user action will
+    // re-fetch. Don't render the device-mgmt chrome until we know.
+    caps = { ...caps };
+  }
+
+  // Show / hide chrome that's permanent for the session.
+  refreshBtn.hidden = !caps.deviceMgmt;
+  disableBtn.hidden = !caps.deviceMgmt;
+  navSettingsBtn.hidden = !caps.appSettings;
+  logoutBtn.hidden = !caps.login;
+
+  if (caps.login) {
+    try {
+      const st = await window.go.gui.App.GetAuthStatus();
+      if (st) {
+        authState = {
+          loggedIn: !!st.loggedIn,
+          server: st.server || "",
+          loginName: st.loginName || "",
+        };
+      }
+    } catch (e) {
+      // Stay logged-out on a failed status query — the login screen is
+      // the only safe default for a Login-capable backend.
+    }
+  } else {
+    // Non-login backends are trivially "logged in" so applyView never
+    // gates on auth state.
+    authState.loggedIn = true;
+  }
+
+  if (caps.deviceMgmt) {
+    await pickDeviceIfMany();
+    await refresh();
+    startStatusTicker();
+  } else {
+    // Host-side backend: fabricate a "device present" status so the
+    // rest of the UI's lastStatus reads succeed without a real device.
+    lastStatus = { connected: true, mode: "app" };
+    applyView();
+  }
+
   // The runtime injects EventsOn alongside the bound App; we register
   // the close-request listener here so the prompt runs even on the very
   // first close attempt.

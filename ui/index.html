@@ -9,11 +9,29 @@
   <body>
     <main>
       <header>
-        <h1>Passbox</h1>
-        <button id="refresh" type="button">Refresh</button>
+        <h1 id="app-title">Vault</h1>
+        <div class="header-actions">
+          <button id="refresh" type="button" hidden>Refresh</button>
+          <button id="logout" type="button" hidden>Sign out</button>
+        </div>
       </header>
       <div id="banner" class="banner" hidden role="status" aria-live="polite"></div>
-      <section id="landing">
+      <section id="login-screen" hidden>
+        <div class="card login-card">
+          <h2>Sign in</h2>
+          <p class="muted" id="login-hint">Enter your server URL to begin.</p>
+          <label class="login-field">
+            <span>Server URL</span>
+            <input id="login-server" type="url" placeholder="https://cloud.example.com" />
+          </label>
+          <p id="login-error" class="error" hidden></p>
+          <div class="actions">
+            <button id="login-begin" type="button">Continue</button>
+            <button id="login-cancel" type="button" hidden>Cancel</button>
+          </div>
+        </div>
+      </section>
+      <section id="landing" hidden>
         <div id="status-card" class="card" aria-live="polite">
           <p class="muted">Loading…</p>
         </div>
@@ -23,10 +41,11 @@
       </section>
       <section id="app-pane" hidden>
         <div class="app-toolbar">
+          <input id="search-input" type="search" placeholder="Search…" aria-label="Search vault" />
           <span id="dirty-indicator" class="dirty" hidden aria-live="polite">Unsaved changes</span>
-          <button id="save-vault" type="button" disabled>Write to device</button>
+          <button id="save-vault" type="button" disabled>Save</button>
           <button id="reload-tree" type="button">Reload</button>
-          <button id="disable-mgmt" type="button">Exit management</button>
+          <button id="disable-mgmt" type="button" hidden>Exit management</button>
         </div>
         <div class="app-layout">
           <nav id="page-nav" class="page-nav" aria-label="Sections">
