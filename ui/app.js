@@ -1730,9 +1730,21 @@ function openContextMenu(x, y, parts, node) {
     });
     contextMenu.appendChild(li);
   }
+  // Render first so we can measure, then clamp into the viewport.
+  // Anchoring the menu at (x, y) directly clips it off-screen for
+  // rows near the bottom or right edge — flip upward / leftward when
+  // the natural position would overflow.
   contextMenu.style.left = `${x}px`;
   contextMenu.style.top = `${y}px`;
   contextMenu.hidden = false;
+  const rect = contextMenu.getBoundingClientRect();
+  const margin = 4;
+  if (rect.right > window.innerWidth - margin) {
+    contextMenu.style.left = `${Math.max(margin, x - rect.width)}px`;
+  }
+  if (rect.bottom > window.innerHeight - margin) {
+    contextMenu.style.top = `${Math.max(margin, y - rect.height)}px`;
+  }
 }
 
 // contextMenuItems decides which items apply to the right-clicked node.
